@@ -7,6 +7,9 @@
 # ln -s /usr/local/bin/python3.7-config /usr/local/bin/python-config
 # ln -s /usr/local/bin/python3.7 /usr/local/bin/python
 # pip install cvlib
+# using https://pypi.org/project/python-pidfile/ for process management
+# i also use python 3?
+# pip3 install python-pidfile
 
 import numpy
 # cv2 vs opencv? opencv handles the import cv2
@@ -31,16 +34,21 @@ import sys
 import time
 import yaml
 
+"""
+Main Doorbell class
+"""
 class DoorBell():
-
     ### MQTT
     mqttQos = 0
     mqttRetained = False
-    pidfile = '/var/run/doorbell.pid'
-    lockfile = '/var/run/doorbell.lock'
-    topic ='dev/test'
+    # pidfile = '/var/run/doorbell.pid'
+    # lockfile = '/var/run/doorbell.lock'
+    topic = 'dev/test'
 
     def __init__(self):
+        """
+        Init Function
+        """
         global logger
         logger = self.setupLogger()
         logger.info("init")
@@ -50,71 +58,110 @@ class DoorBell():
             cfg = yaml.load(ymlfile, Loader=yaml.FullLoader)
 
     def on_connect(self, client, userdata, flags, rc):
-        logger.info("Connected with result code "+str(rc))
+        """
+        On connect Function
+        :param client:
+        :param userdata:
+        :param flags:
+        :param rc:
+        :return:
+        """
+        logger.info("Connected with result code " + str(rc))
         client.subscribe(self.topic)
 
     # The callback for when a PUBLISH message is received from the server.
     def on_message(self, client, userdata, msg):
+        """
+        On Message Received
+        :param client:
+        :param userdata:
+        :param msg:
+        :return:
+        """
         payload = str(msg.payload.decode('ascii'))  # decode the binary string
         logger.info(msg.topic + " " + payload)
         process_trigger(payload)
 
     def process_trigger(payload):
+        """
+        Trigger process
+        :return:
+        """
         if payload == 'ON':
             logger.info('ON triggered')
             post_image()
 
     def connect_to_mqtt(self):
+        """
+        Connect to MQTT
+        :return:
+        """
         client = mqtt.Client()
         db = self
-        client.on_connect = db.on_connect    # call these on connect and on message
+        client.on_connect = db.on_connect  # call these on connect and on message
         client.on_message = db.on_message
-        client.username_pw_set(username=cfg["mqtt"]["user"],password=cfg["mqtt"]["pass"])  # need this
+        client.username_pw_set(username=cfg["mqtt"]["user"], password=cfg["mqtt"]["pass"])  # need this
         client.connect(cfg["mqtt"]["host"])
-        #client.loop_forever()    #  don't get past this
-        client.loop_start()    #  run in background and free up main thread
+        # client.loop_forever()    #  don't get past this
+        client.loop_start()  # run in background and free up main thread
 
         return client
 
     def setupLogger(self):
-        loglevel =  os.environ.get("LOGLEVEL", "INFO")
+        """
+        Setup Logger
+        :return:
+        """
+        loglevel = os.environ.get("LOGLEVEL", "INFO")
         # https://docs.python.org/2/howto/logging-cookbook.html
         logging.basicConfig(level=loglevel,
-                    format='%(asctime)s %(name)-12s %(levelname)-8s %(message)s',
-                    datefmt='%d-%m %H:%M:%S',
-                    filename='/var/log/doorbell.log',
-                    filemode='w')
+                            format='%(asctime)s %(name)-12s %(levelname)-8s %(message)s',
+                            datefmt='%d-%m %H:%M:%S',
+                            filename='/var/log/doorbell.log',
+                            filemode='w')
         logger = logging.getLogger("doorbell")
 
         return logger
 
     def lockPidFile(self):
-        db = self
-        file_handle = open(db.lockfile, 'w+')
+        """
+        Lock Pid file
+        :return:
+        """
+        # db = self
+        # file_handle = open(db.lockfile, 'w+')
         logger.info("test to see if this is already running")
 
-        try:
-            fcntl.lockf(file_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except IOError:
-            # while the thing exits when it is already running, it does not seem to run the logger
-            logger.error("process file lock could not be gained, process already running? Exiting")
-            sys.exit(1)
+        # try:
+        #     fcntl.lockf(file_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        # except IOError:
+        #     # while the thing exits when it is already running, it does not seem to run the logger
+        #     logger.error("process file lock could not be gained, process already running? Exiting")
+        #     sys.exit(1)
 
         return file_handle
 
     def writePidFile(self):
+        """
+        Write Pid File
+        :return:
+        """
         db = self
         pid = str(os.getpid())
         f = open(db.pidfile, 'w')
         f.write(pid)
-        f.close() # this will close the lock
+        f.close()  # this will close the lock
 
     def get_start(self):
+        """
+        Get Start
+        :return:
+        """
         db = self
 
         # get a lock on the pidfile
-        lock = db.lockPidFile()
-        db.writePidFile()
+        # lock = db.lockPidFile()
+        # db.writePidFile()
 
         logger.info("starting")
 
@@ -122,7 +169,8 @@ class DoorBell():
         os.environ['TZ'] = 'Australia/Sydney'
 
         # sub stream, https://www.use-ip.co.uk/forum/threads/hikvision-rtsp-stream-urls.890/
-        camera_url = 'rtsp://' + cfg["camera"]["user"] + ':' + cfg["camera"]["pass"] + '@' + cfg["camera"]["host"] + '/Streaming/Channels/1'
+        camera_url = 'rtsp://' + cfg["camera"]["user"] + ':' + cfg["camera"]["pass"] + '@' + cfg["camera"][
+            "host"] + '/Streaming/Channels/1'
         video_capture = cv2.VideoCapture(camera_url)
 
         # Initialize some variables
@@ -145,7 +193,7 @@ class DoorBell():
         # https://stackoverflow.com/questions/11312525/catch-ctrlc-sigint-and-exit-multiprocesses-gracefully-in-python
         original_sigint_handler = signal.signal(signal.SIGINT, signal.SIG_IGN)
 
-        pool = mp.Pool(4, db.worker, (porch_camera_image,post,queue,mqtt_name,last_face_detection))
+        pool = mp.Pool(4, db.worker, (porch_camera_image, post, queue, mqtt_name, last_face_detection))
 
         signal.signal(signal.SIGTERM, original_sigint_handler)
 
@@ -184,7 +232,7 @@ class DoorBell():
             client.publish('doorbell/status', payload, db.mqttQos, db.mqttRetained)
 
             pool.terminate()
-            lock.close()
+            # lock.close()
         else:
 
             logger.info("Normal termination")
@@ -195,14 +243,22 @@ class DoorBell():
             client.publish('doorbell/status', payload, db.mqttQos, db.mqttRetained)
 
             pool.close()
-            lock.close()
+            # lock.close()
 
         # Release handle to the webcam
         video_capture.release()
-        lock.close()
+        # lock.close()
 
-    def worker(self,porch_camera_image,post,queue,mqtt_name,last_face_detection):
-
+    def worker(self, porch_camera_image, post, queue, mqtt_name, last_face_detection):
+        """
+        Worker
+        :param porch_camera_image:
+        :param post:
+        :param queue:
+        :param mqtt_name:
+        :param last_face_detection:
+        :return:
+        """
         db = self
         client = db.connect_to_mqtt()
 
@@ -253,27 +309,26 @@ class DoorBell():
                     post = True
 
                     # https://github.com/arunponnusamy/cvlib/blob/master/examples/face_detection.py
-                    for face,conf in zip(faces,confidences):
+                    for face, conf in zip(faces, confidences):
 
                         confpercentage = (conf * 100)
 
                         if confpercentage > 60:
-
                             client.publish('doorbell/porch', 'ding,dong')
                             filename = '/opt/face_recognition/pictures/face/' + the_time + '.png'
                             mqtt_name = 'camera/porch_face'
 
-                            (startX,startY) = face[0],face[1]
-                            (endX,endY) = face[2],face[3]
+                            (startX, startY) = face[0], face[1]
+                            (endX, endY) = face[2], face[3]
 
                             # draw rectangle over face
-                            cv2.rectangle(small_frame, (startX,startY), (endX,endY), (0,255,0), 2)
+                            cv2.rectangle(small_frame, (startX, startY), (endX, endY), (0, 255, 0), 2)
 
                             # https://github.com/arunponnusamy/cvlib/blob/master/examples/face_detection_webcam.py#L44
                             # write confidence percentage on top of face rectangle
                             text = "{:.2f}%".format(confpercentage)
                             Y = startY - 10 if startY - 10 > 10 else startY + 10
-                            cv2.putText(small_frame, text, (startX,Y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,255,0), 2)
+                            cv2.putText(small_frame, text, (startX, Y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
                     post_frame = small_frame
 
@@ -294,7 +349,7 @@ class DoorBell():
 
             if post == True:
                 # this writes to file and works
-                cv2.imwrite(filename,post_frame)
+                cv2.imwrite(filename, post_frame)
 
                 # prepare the frame/image for posting to HASS mqtt
                 with open(filename, "rb") as imageFile:
@@ -317,7 +372,8 @@ class DoorBell():
                 else:
                     confidences_average = 0
 
-                payload = '{ "date": ' + the_time + ', "face": ' + str(face_count) + ', "confidences": ' + str(confidences_average) + '  }'
+                payload = '{ "date": ' + the_time + ', "face": ' + str(face_count) + ', "confidences": ' + str(
+                    confidences_average) + '  }'
                 client.publish('doorbell/attributes', payload, db.mqttQos, db.mqttRetained)
 
                 # tell hass we are still online
@@ -332,13 +388,17 @@ class DoorBell():
 
             # os.remove(filename)
 
-if __name__ == '__main__':
 
+if __name__ == '__main__':
     # https://stackoverflow.com/questions/1603109/how-to-make-a-python-script-run-like-a-service-or-daemon-in-linux
-    fpid = os.fork()
-    if fpid != 0:
-        sys.exit(0)
+    # Winston used this: https://stackoverflow.com/a/4637656/2965205
+    try:
+        pid = os.fork()
+        if pid > 0:
+            print(f'PID: {pid}')
+            os._exit(0)
+    except OSError as e:
+        print(e)
 
     db = DoorBell()
     db.get_start()
-
